@@ -1,0 +1,104 @@
+metadata:
+  resource:
+    group: apps
+    kind: StatefulSet
+    name: ace-nats
+    scope: Namespaced
+    version: v1
+  release:
+    # Release name
+    name: ""
+    # Release namespace
+    namespace: ""
+
+form:
+  alert:
+    ## Enable PrometheusRule alerts
+    enabled: warning
+
+    ## Labels for default rules
+    labels: # +doc-gen:break
+      release: kube-prometheus-stack
+
+    ## Annotations for default rules
+    annotations: {}
+
+    ## Additional labels for PrometheusRule alerts
+    additionalRuleLabels: {}
+
+    ## Prefix for runbook URLs. Use this to override the first part of the runbookURLs that is common to all rules.
+    # runbookUrl: "https://runbooks.prometheus-operator.dev/runbooks"
+
+    groups:
+      jetstream:
+        enabled: warning
+        rules:
+          natsJetStreamHighMemoryUsage:
+            enabled: true
+            duration: "5m"
+            val: 90
+            severity: critical
+          natsJetStreamHighStorageUsage:
+            enabled: true
+            duration: "5m"
+            val: 90
+            severity: critical
+          natsJetStreamHighPendingMessages:
+            enabled: true
+            duration: "10m"
+            val: 5000
+            severity: critical
+          natsJetStreamHighAckPending:
+            enabled: true
+            duration: "10m"
+            val: 2000
+            severity: critical
+          natsJetStreamConsumerStalled:
+            enabled: true
+            duration: "15m"
+            severity: warning
+          natsJetStreamHighMessageCount:
+            enabled: true
+            duration: "15m"
+            val: 1000000
+            severity: warning
+          natsJetStreamHighStreamSize:
+            enabled: true
+            duration: "15m"
+            val: 10737418240 # 10GB
+            severity: warning
+          natsJetStreamNoIngestion:
+            enabled: true
+            duration: "15m"
+            severity: warning
+      connectivity:
+        enabled: warning
+        rules:
+          natsSuddenConnectionDrop:
+            enabled: true
+            duration: "5m"
+            severity: warning
+          natsHighActiveConnections:
+            enabled: true
+            duration: "5m"
+            val: 1000
+            severity: warning
+      consumers:
+        enabled: warning
+        rules:
+          natsSuddenConsumerDrop:
+            enabled: true
+            duration: "5m"
+            severity: warning
+          natsHighTotalConsumers:
+            enabled: true
+            duration: "5m"
+            val: 100
+            severity: warning
+
+grafana:
+  enabled: false
+  version: 7.5.5
+  jobName: ace-nats-stats
+  url: ""
+  apikey: ""
