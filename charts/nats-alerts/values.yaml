@@ -48,6 +48,11 @@ form:
             duration: "10m"
             val: 5000
             severity: critical
+          natsJetStreamHighPendingMessagesWarning:
+            enabled: true
+            duration: "10m"
+            val: 2000
+            severity: warning
           natsJetStreamHighAckPending:
             enabled: true
             duration: "10m"

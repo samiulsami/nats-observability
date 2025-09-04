@@ -54,6 +54,17 @@ spec:
         summary: "High number of pending messages for consumer {{`{{`}} $labels.consumer {{`}}`}} on stream {{`{{`}} $labels.stream {{`}}`}}"
         description: "Consumer {{`{{`}} $labels.consumer {{`}}`}} on stream {{`{{`}} $labels.stream {{`}}`}} has {{`{{`}} $value {{`}}`}} pending messages, exceeding the {{ .rules.natsJetStreamHighPendingMessages.val }} threshold. The consumer may be slow or down.\n  VALUE = {{`{{`}} $value {{`}}`}}\n  LABELS = {{`{{`}} $labels {{`}}`}}"
     {{ end -}}
+    {{ if (include "nats-alerts.alertEnabled" (list $.Values.form.alert.enabled .enabled .rules.natsJetStreamHighPendingMessagesWarning.enabled .rules.natsJetStreamHighPendingMessagesWarning.severity)) -}}
+    - alert: NatsJetStreamHighPendingMessagesWarning
+      expr: jetstream_consumer_num_pending{job="{{ $app }}-stats",namespace="{{ $.Release.Namespace }}"} > {{ .rules.natsJetStreamHighPendingMessagesWarning.val }}
+      for: {{ .rules.natsJetStreamHighPendingMessagesWarning.duration }}
+      labels:
+        severity: {{ .rules.natsJetStreamHighPendingMessagesWarning.severity }}
+        {{- include "nats-alerts.alertLabels" $ | nindent 8 }}
+      annotations:
+        summary: "Warning: High number of pending messages for consumer {{`{{`}} $labels.consumer {{`}}`}} on stream {{`{{`}} $labels.stream {{`}}`}}"
+        description: "Consumer {{`{{`}} $labels.consumer {{`}}`}} on stream {{`{{`}} $labels.stream {{`}}`}} has {{`{{`}} $value {{`}}`}} pending messages, exceeding the {{ .rules.natsJetStreamHighPendingMessagesWarning.val }} warning threshold. Monitor for potential consumer slowdown.\n  VALUE = {{`{{`}} $value {{`}}`}}\n  LABELS = {{`{{`}} $labels {{`}}`}}"
+    {{ end -}}
     {{ if (include "nats-alerts.alertEnabled" (list $.Values.form.alert.enabled .enabled .rules.natsJetStreamHighAckPending.enabled .rules.natsJetStreamHighAckPending.severity)) -}}
     - alert: NatsJetStreamHighAckPending
       expr: jetstream_consumer_num_ack_pending{job="{{ $app }}-stats",namespace="{{ $.Release.Namespace }}"} > {{ .rules.natsJetStreamHighAckPending.val }}
