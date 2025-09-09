@@ -1,0 +1,71 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-loadtest
+  namespace: ace
+  labels:
+    app: nats-loadtest
+spec:
+  replicas: ${REPLICAS}
+  selector:
+    matchLabels:
+      app: nats-loadtest
+  template:
+    metadata:
+      labels:
+        app: nats-loadtest
+    spec:
+      containers:
+        - name: loadtest
+          image: ${IMAGE_NAME}
+          imagePullPolicy: Always
+          command: [/app/loadtest]
+          args:
+            - --nats-url=${NATS_URL}
+            - --creds=${CREDS_PATH}
+            - --producers=${PRODUCERS}
+            - --consumers=${CONSUMERS}
+            - --slow-consumers=${SLOW_CONSUMERS}
+            - --producer-rate=${PRODUCER_RATE}
+            - --consumer-rate=${CONSUMER_RATE}
+            - --slow-consumer-rate=${SLOW_CONSUMER_RATE}
+            - --size=${MESSAGE_SIZE}
+            - --subject=${SUBJECT}
+            - --stream-max-msgs=${STREAM_MAX_MSGS}
+            - --stream-max-bytes=${STREAM_MAX_BYTES}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: ${CPU_REQUESTS}
+              memory: ${MEMORY_REQUESTS}
+            limits:
+              cpu: ${CPU_LIMITS}
+              memory: ${MEMORY_LIMITS}
+          livenessProbe:
+            exec:
+              command: [/bin/sh, -c, ps aux | grep loadtest | grep -v grep]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: [/bin/sh, -c, ps aux | grep loadtest | grep -v grep]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: nats-creds
+              mountPath: /etc/nats/creds
+              readOnly: true
+      volumes:
+        - name: nats-creds
+          secret:
+            secretName: ace-nats-cred
+      restartPolicy: Always

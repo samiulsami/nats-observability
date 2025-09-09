@@ -1,0 +1,71 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-loadtest
+  namespace: ace
+  labels:
+    app: nats-loadtest
+spec:
+  replicas: 10
+  selector:
+    matchLabels:
+      app: nats-loadtest
+  template:
+    metadata:
+      labels:
+        app: nats-loadtest
+    spec:
+      containers:
+        - name: loadtest
+          image: sami7786/nats-loadtest:latest
+          imagePullPolicy: Always
+          command: [/app/loadtest]
+          args:
+            - --nats-url=nats://ace-nats.ace.svc.cluster.local:4222
+            - --creds=/etc/nats/creds/admin.creds
+            - --producers=200
+            - --consumers=150
+            - --slow-consumers=50
+            - --producer-rate=100
+            - --consumer-rate=50
+            - --slow-consumer-rate=20
+            - --size=4096
+            - --subject=loadtest_20250909_181947_624719638
+            - --stream-max-msgs=10000000
+            - --stream-max-bytes=2000000000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          livenessProbe:
+            exec:
+              command: [/bin/sh, -c, ps aux | grep loadtest | grep -v grep]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command: [/bin/sh, -c, ps aux | grep loadtest | grep -v grep]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: nats-creds
+              mountPath: /etc/nats/creds
+              readOnly: true
+      volumes:
+        - name: nats-creds
+          secret:
+            secretName: ace-nats-cred
+      restartPolicy: Always
