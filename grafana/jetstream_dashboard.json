@@ -1103,7 +1103,10 @@
   "refresh": "",
   "schemaVersion": 27,
   "style": "dark",
-  "tags": [],
+  "tags": [
+    "nats",
+    "messaging"
+  ],
   "templating": {
     "list": [
       {
