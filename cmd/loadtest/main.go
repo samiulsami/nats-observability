@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -17,7 +14,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/spf13/cobra"
-	wait "k8s.io/apimachinery/pkg/util/wait"
 )
 
 var (
@@ -28,17 +24,16 @@ var (
 	consumers     int
 	slowConsumers int
 
-	producerRate     int
-	consumerRate     int
-	slowConsumerRate int
-	msgSize          int
-	subjectName      string
-	streamMaxMsgs    int64
-	streamMaxBytes   int64
+	producerRate        int
+	consumerRate        int
+	slowConsumerRate    int
+	msgSize             int
+	subjectCommonPrefix string
+	streamMaxMsgs       int64
+	streamMaxBytes      int64
 )
 
 type Stats struct {
-	sent     int64
 	received int64
 	errors   int64
 }
@@ -46,21 +41,21 @@ type Stats struct {
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "loadtest",
-		Short: "NATS load testing tool",
+		Short: "NATS storage cleanup tool - drains all messages from all streams",
 		Run:   runLoadTest,
 	}
 
 	rootCmd.Flags().StringVar(&natsURL, "nats-url", "nats://ace-nats.ace.svc.cluster.local:4222", "NATS server URL")
 	rootCmd.Flags().StringVar(&natsCredsFile, "creds", "", "NATS credentials file path")
 	rootCmd.Flags().IntVar(&producers, "producers", 50, "Number of producers")
-	rootCmd.Flags().IntVar(&consumers, "consumers", 50, "Number of fast consumers")
+	rootCmd.Flags().IntVar(&consumers, "consumers", 20, "Number of cleanup consumers")
 	rootCmd.Flags().IntVar(&slowConsumers, "slow-consumers", 20, "Number of slow consumers")
 
 	rootCmd.Flags().IntVar(&producerRate, "producer-rate", 100, "Messages per second per producer")
 	rootCmd.Flags().IntVar(&consumerRate, "consumer-rate", 50, "Messages per second per fast consumer")
 	rootCmd.Flags().IntVar(&slowConsumerRate, "slow-consumer-rate", 10, "Messages per second per slow consumer")
 	rootCmd.Flags().IntVar(&msgSize, "size", 1024, "Message size in bytes")
-	rootCmd.Flags().StringVar(&subjectName, "subject", "loadtest", "Subject name")
+	rootCmd.Flags().StringVar(&subjectCommonPrefix, "subject", "loadtest", "Subject name")
 	rootCmd.Flags().Int64Var(&streamMaxMsgs, "stream-max-msgs", 1000000, "Maximum messages in stream")
 	rootCmd.Flags().Int64Var(&streamMaxBytes, "stream-max-bytes", 1024*1024*1024, "Maximum bytes in stream (1GB default)")
 
@@ -78,13 +73,11 @@ func runLoadTest(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Failed to generate UUID: %v", err)
 	}
-	subjectName = fmt.Sprintf("%s_%s_%s", subjectName, podName, newuuid.String())
+	subjectCommonPrefix = fmt.Sprintf("%s_%s_%s", subjectCommonPrefix, podName, newuuid.String())
 
-	log.Printf("Starting NATS load test...")
+	log.Printf("Starting NATS storage cleanup...")
 	log.Printf("NATS URL: %s", natsURL)
-	log.Printf("Producers: %d, Fast Consumers: %d, Slow Consumers: %d", producers, consumers, slowConsumers)
-	log.Printf("Producer Rate: %d msg/s, Consumer Rate: %d/%d msg/s (fast/slow), Size: %d bytes", producerRate, consumerRate, slowConsumerRate, msgSize)
-	log.Printf("Subject: %s", subjectName)
+	log.Printf("Cleanup consumers per stream: %d", consumers)
 
 	var nc *nats.Conn
 
@@ -112,29 +105,30 @@ func runLoadTest(cmd *cobra.Command, args []string) {
 		log.Fatal("Failed to get JetStream context:", err)
 	}
 
-	streamName := subjectName + "_stream"
-	if waitErr := wait.ExponentialBackoff(wait.Backoff{
-		Duration: 500 * time.Millisecond,
-		Factor:   1.5,
-		Jitter:   0.5,
-		Cap:      10 * time.Second,
-		Steps:    5,
-	}, func() (bool, error) {
-		_, err = js.AddStream(&nats.StreamConfig{
-			Name:      streamName,
-			Subjects:  []string{subjectName + ".>"},
-			Retention: nats.LimitsPolicy,
-			MaxMsgs:   streamMaxMsgs,
-			MaxBytes:  streamMaxBytes,
-		})
-		return err == nil || errors.Is(err, nats.ErrStreamNameAlreadyInUse), nil
-	}); waitErr != nil && !wait.Interrupted(waitErr) {
-		log.Fatalf("Failed to create or verify stream: %v", err)
-	}
-
-	if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-		log.Fatalf("Failed to create stream: %v", err)
-	}
+	// streamName := subjectCommonPrefix + "_stream"
+	// if waitErr := wait.ExponentialBackoff(wait.Backoff{
+	// 	Duration: 500 * time.Millisecond,
+	// 	Factor:   1.5,
+	// 	Jitter:   0.5,
+	// 	Cap:      10 * time.Second,
+	// 	Steps:    5,
+	// }, func() (bool, error) {
+	// 	_, err = js.AddStream(&nats.StreamConfig{
+	// 		Name:      streamName,
+	// 		Subjects:  []string{subjectCommonPrefix + ".>"},
+	// 		Retention: nats.LimitsPolicy,
+	// 		MaxMsgs:   streamMaxMsgs,
+	// 		MaxBytes:  streamMaxBytes,
+	// 		MaxAge:    24 * time.Hour,
+	// 	})
+	// 	return err == nil || errors.Is(err, nats.ErrStreamNameAlreadyInUse), nil
+	// }); waitErr != nil && !wait.Interrupted(waitErr) {
+	// 	log.Fatalf("Failed to create or verify stream: %v", err)
+	// }
+	//
+	// if err != nil && !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
+	// 	log.Fatalf("Failed to create stream: %v", err)
+	// }
 
 	stats := &Stats{}
 
@@ -146,28 +140,50 @@ func runLoadTest(cmd *cobra.Command, args []string) {
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < consumers; i++ {
-		id := i
-		wg.Go(func() {
-			runConsumer(ctx, nc, js, id, false, stats)
-		})
+	// Get all existing streams
+	streamNames, err := getAllStreams(js)
+	if err != nil {
+		log.Fatalf("Failed to get streams: %v", err)
 	}
 
-	for i := 0; i < slowConsumers; i++ {
-		id := i
-		wg.Go(func() {
-			runConsumer(ctx, nc, js, id+consumers, true, stats)
-		})
+	if len(streamNames) == 0 {
+		log.Printf("No streams found - nothing to clean up")
+		return
 	}
 
-	for i := 0; i < producers; i++ {
-		id := i
-		wg.Go(func() {
-			runProducer(ctx, nc, js, id, stats)
-		})
+	log.Printf("Found %d streams to clean up: %v", len(streamNames), streamNames)
+
+	// Start statistics reporter
+	wg.Go(func() {
+		reportStats(ctx, stats)
+	})
+
+	// Create consumers for each stream
+	for i, streamName := range streamNames {
+		for j := 0; j < consumers; j++ {
+			streamIdx := i
+			consumerIdx := j
+			wg.Go(func() {
+				runStreamConsumer(ctx, nc, js, streamIdx, consumerIdx, streamName, stats)
+			})
+		}
 	}
 
-	log.Println("Load test started. Press Ctrl+C to stop.")
+	// for i := 0; i < slowConsumers; i++ {
+	// 	id := i
+	// 	wg.Go(func() {
+	// 		runConsumer(ctx, nc, js, id+consumers, true, stats)
+	// 	})
+	// }
+
+	// for i := 0; i < producers; i++ {
+	// 	id := i
+	// 	wg.Go(func() {
+	// 		runProducer(ctx, nc, js, id, stats)
+	// 	})
+	// }
+
+	log.Println("Storage cleanup started. Press Ctrl+C to stop.")
 
 	select {
 	case sig := <-sigChan:
@@ -179,116 +195,265 @@ func runLoadTest(cmd *cobra.Command, args []string) {
 
 	log.Println("Waiting for goroutines to finish...")
 	wg.Wait()
-	log.Println("Load test stopped.")
+	log.Println("Storage cleanup stopped.")
 }
 
-func runProducer(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, id int, stats *Stats) {
-	ticker := time.NewTicker(time.Second / time.Duration(producerRate))
+// func runProducer(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, id int, stats *Stats) {
+// 	ticker := time.NewTicker(time.Second / time.Duration(producerRate))
+// 	defer ticker.Stop()
+//
+// 	subject := fmt.Sprintf("%s.producer.%d", subjectCommonPrefix, id)
+//
+// 	log.Printf("Producer %d: Started", id)
+// 	defer log.Printf("Producer %d: Stopped", id)
+//
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			return
+// 		case <-ticker.C:
+// 			message := generateMessage(msgSize)
+// 			_, err := js.Publish(subject, message)
+// 			if err != nil {
+// 				atomic.AddInt64(&stats.errors, 1)
+// 				log.Printf("Producer %d: Publish error: %v", id, err)
+// 			} else {
+// 				atomic.AddInt64(&stats.sent, 1)
+// 			}
+// 		}
+// 	}
+// }
+
+func reportStats(ctx context.Context, stats *Stats) {
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	subject := fmt.Sprintf("%s.producer.%d", subjectName, id)
-
-	log.Printf("Producer %d: Started", id)
-	defer log.Printf("Producer %d: Stopped", id)
+	lastReceived := int64(0)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			message := generateMessage(msgSize)
-			_, err := js.Publish(subject, message)
-			if err != nil {
-				atomic.AddInt64(&stats.errors, 1)
-				log.Printf("Producer %d: Publish error: %v", id, err)
-			} else {
-				atomic.AddInt64(&stats.sent, 1)
-			}
+			received := atomic.LoadInt64(&stats.received)
+			errors := atomic.LoadInt64(&stats.errors)
+			rate := (received - lastReceived) / 10
+			lastReceived = received
+
+			log.Printf("STATS: Total processed: %d, Errors: %d, Rate: %d msg/s", received, errors, rate)
 		}
 	}
 }
 
-func runConsumer(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, id int, isSlow bool, stats *Stats) {
-	subject := fmt.Sprintf("%s.messages", subjectName)
-	consumerType := "fast"
-	rate := consumerRate
-	if isSlow {
-		consumerType = "slow"
-		rate = slowConsumerRate
+func getAllStreams(js nats.JetStreamContext) ([]string, error) {
+	var streamNames []string
+
+	for info := range js.StreamsInfo() {
+		if info == nil {
+			break
+		}
+		streamNames = append(streamNames, info.Config.Name)
+		log.Printf("Found stream: %s with %d messages (%d bytes)",
+			info.Config.Name, info.State.Msgs, info.State.Bytes)
 	}
 
+	return streamNames, nil
+}
+
+func runStreamConsumer(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, streamIdx, consumerIdx int, streamName string, stats *Stats) {
 	newuuid, err := uuid.NewRandom()
 	if err != nil {
-		log.Printf("Consumer %d: Failed to generate UUID: %v", id, err)
+		log.Printf("StreamConsumer %d-%d: Failed to generate UUID: %v", streamIdx, consumerIdx, err)
 		return
 	}
 
-	consumerName := fmt.Sprintf("%s_%s_c%d_%d_%s", consumerType, podName, id, time.Now().UnixNano(), newuuid.String())
+	consumerName := fmt.Sprintf("cleanup_%s_s%d_c%d_%d_%s", podName, streamIdx, consumerIdx, time.Now().UnixNano(), newuuid.String())
 
-	log.Printf("subject name: %s, consumer name: %s\n", subject, consumerName)
-	sub, err := js.PullSubscribe(subject, consumerName, nats.PullMaxWaiting(1000))
+	log.Printf("StreamConsumer %d-%d: Creating consumer %s for stream %s", streamIdx, consumerIdx, consumerName, streamName)
+
+	// Create consumer directly on the stream with DeliverAll policy
+	consumerConfig := &nats.ConsumerConfig{
+		Durable:       consumerName,
+		DeliverPolicy: nats.DeliverAllPolicy,
+		AckPolicy:     nats.AckExplicitPolicy,
+		MaxWaiting:    1000,
+		MaxAckPending: 1000,
+	}
+
+	consumerInfo, err := js.AddConsumer(streamName, consumerConfig)
 	if err != nil {
-		log.Printf("Consumer %d (%s): Failed to create pull subscription: %v", id, consumerName, err)
+		log.Printf("StreamConsumer %d-%d: Failed to create consumer for stream %s: %v", streamIdx, consumerIdx, streamName, err)
 		return
 	}
+
+	sub, err := js.PullSubscribe("", consumerName, nats.Bind(streamName, consumerName))
+	if err != nil {
+		log.Printf("StreamConsumer %d-%d: Failed to create pull subscription for stream %s: %v", streamIdx, consumerIdx, streamName, err)
+		return
+	}
+
 	defer func() {
 		if err := sub.Unsubscribe(); err != nil {
-			log.Printf("Consumer %d (%s): Unsubscribe error: %v", id, consumerType, err)
+			log.Printf("StreamConsumer %d-%d: Unsubscribe error for stream %s: %v", streamIdx, consumerIdx, streamName, err)
+		}
+		// Clean up the consumer
+		if err := js.DeleteConsumer(streamName, consumerName); err != nil {
+			log.Printf("StreamConsumer %d-%d: Failed to delete consumer %s from stream %s: %v", streamIdx, consumerIdx, consumerName, streamName, err)
 		}
 	}()
 
-	ticker := time.NewTicker(time.Second / time.Duration(rate))
-	defer ticker.Stop()
+	log.Printf("StreamConsumer %d-%d: Started cleanup for stream %s (consumer: %s)", streamIdx, consumerIdx, streamName, consumerInfo.Name)
+	defer log.Printf("StreamConsumer %d-%d: Stopped cleanup for stream %s", streamIdx, consumerIdx, streamName)
 
-	log.Printf("Consumer %d (%s): Started at %d msg/sec", id, consumerType, rate)
-	defer log.Printf("Consumer %d (%s): Stopped", id, consumerType)
+	batchSize := 500
+	totalProcessed := int64(0)
 
 	for {
 		select {
 		case <-ctx.Done():
+			log.Printf("StreamConsumer %d-%d: Processed %d total messages from stream %s", streamIdx, consumerIdx, totalProcessed, streamName)
 			return
-		case <-ticker.C:
-			msgs, err := sub.Fetch(1, nats.MaxWait(500*time.Millisecond))
-			if err != nil && err != nats.ErrTimeout {
+		default:
+			msgs, err := sub.Fetch(batchSize, nats.MaxWait(2*time.Second))
+			if err != nil {
+				if err == nats.ErrTimeout {
+					// Check if stream is empty
+					info, infoErr := js.StreamInfo(streamName)
+					if infoErr == nil && info.State.Msgs == 0 {
+						log.Printf("StreamConsumer %d-%d: Stream %s is now empty, processed %d total messages", streamIdx, consumerIdx, streamName, totalProcessed)
+						return
+					}
+					continue
+				}
 				atomic.AddInt64(&stats.errors, 1)
+				log.Printf("StreamConsumer %d-%d: Fetch error from stream %s: %v", streamIdx, consumerIdx, streamName, err)
+				time.Sleep(500 * time.Millisecond)
 				continue
 			}
 
+			if len(msgs) == 0 {
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			batchProcessed := 0
 			for _, msg := range msgs {
 				select {
 				case <-ctx.Done():
+					log.Printf("StreamConsumer %d-%d: Processed %d total messages from stream %s", streamIdx, consumerIdx, totalProcessed, streamName)
 					return
 				default:
-					atomic.AddInt64(&stats.received, 1)
-
 					if err := msg.Ack(); err != nil {
 						atomic.AddInt64(&stats.errors, 1)
+						log.Printf("StreamConsumer %d-%d: Ack error for stream %s: %v", streamIdx, consumerIdx, streamName, err)
+					} else {
+						atomic.AddInt64(&stats.received, 1)
+						batchProcessed++
+						totalProcessed++
 					}
 				}
+			}
+
+			if batchProcessed > 0 {
+				log.Printf("StreamConsumer %d-%d: Processed batch of %d messages from stream %s (total: %d)", streamIdx, consumerIdx, batchProcessed, streamName, totalProcessed)
 			}
 		}
 	}
 }
 
-func generateMessage(size int) []byte {
-	data := map[string]any{
-		"timestamp": time.Now().UnixNano(),
-		"id":        rand.Int63(),
-		"payload":   randomString(size - 100),
-	}
+// func runConsumer(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext, id int, isSlow bool, stats *Stats) {
+// 	subject := ">"
+// 	consumerType := "cleanup"
+//
+// 	newuuid, err := uuid.NewRandom()
+// 	if err != nil {
+// 		log.Printf("Consumer %d: Failed to generate UUID: %v", id, err)
+// 		return
+// 	}
+//
+// 	consumerName := fmt.Sprintf("%s_%s_c%d_%d_%s", consumerType, podName, id, time.Now().UnixNano(), newuuid.String())
+//
+// 	log.Printf("Consumer %d: Creating promiscuous consumer %s for subject %s", id, consumerName, subject)
+//
+// 	sub, err := js.PullSubscribe(subject, consumerName,
+// 		nats.PullMaxWaiting(1000),
+// 		nats.DeliverAll(),
+// 		nats.AckExplicit(),
+// 	)
+// 	if err != nil {
+// 		log.Printf("Consumer %d: Failed to create pull subscription: %v", id, err)
+// 		return
+// 	}
+// 	defer func() {
+// 		if err := sub.Unsubscribe(); err != nil {
+// 			log.Printf("Consumer %d: Unsubscribe error: %v", id, err)
+// 		}
+// 	}()
+//
+// 	log.Printf("Consumer %d: Started aggressive cleanup consumer", id)
+// 	defer log.Printf("Consumer %d: Stopped cleanup consumer", id)
+//
+// 	batchSize := 100
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			return
+// 		default:
+// 			msgs, err := sub.Fetch(batchSize, nats.MaxWait(1*time.Second))
+// 			if err != nil {
+// 				if err == nats.ErrTimeout {
+// 					continue
+// 				}
+// 				atomic.AddInt64(&stats.errors, 1)
+// 				log.Printf("Consumer %d: Fetch error: %v", id, err)
+// 				time.Sleep(100 * time.Millisecond)
+// 				continue
+// 			}
+//
+// 			if len(msgs) == 0 {
+// 				time.Sleep(100 * time.Millisecond)
+// 				continue
+// 			}
+//
+// 			for _, msg := range msgs {
+// 				select {
+// 				case <-ctx.Done():
+// 					return
+// 				default:
+// 					atomic.AddInt64(&stats.received, 1)
+// 					if err := msg.Ack(); err != nil {
+// 						atomic.AddInt64(&stats.errors, 1)
+// 						log.Printf("Consumer %d: Ack error: %v", id, err)
+// 					}
+// 				}
+// 			}
+//
+// 			if len(msgs) > 0 {
+// 				log.Printf("Consumer %d: Processed batch of %d messages", id, len(msgs))
+// 			}
+// 		}
+// 	}
+// }
 
-	msg, _ := json.Marshal(data)
-	return msg
-}
-
-func randomString(length int) string {
-	if length <= 0 {
-		return ""
-	}
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	result := make([]byte, length)
-	for i := range result {
-		result[i] = chars[rand.Intn(len(chars))]
-	}
-	return string(result)
-}
+// func generateMessage(size int) []byte {
+// 	data := map[string]any{
+// 		"timestamp": time.Now().UnixNano(),
+// 		"id":        rand.Int63(),
+// 		"payload":   randomString(size - 100),
+// 	}
+//
+// 	msg, _ := json.Marshal(data)
+// 	return msg
+// }
+//
+// func randomString(length int) string {
+// 	if length <= 0 {
+// 		return ""
+// 	}
+// 	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+// 	result := make([]byte, length)
+// 	for i := range result {
+// 		result[i] = chars[rand.Intn(len(chars))]
+// 	}
+// 	return string(result)
+// }

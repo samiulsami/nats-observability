@@ -31,7 +31,7 @@ spec:
             - --consumer-rate=50
             - --slow-consumer-rate=20
             - --size=4096
-            - --subject=loadtest_20250909_181947_624719638
+            - --subject=loadtest_20250910_181910_214731782
             - --stream-max-msgs=10000000
             - --stream-max-bytes=2000000000
           env:
